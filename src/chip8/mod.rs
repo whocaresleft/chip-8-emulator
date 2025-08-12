@@ -1,9 +1,9 @@
+use std::time;
+
 pub mod cpu;
 pub mod memory;
 pub mod display;
 pub mod keypad;
-
-use rand::prelude::*;
 
 pub struct Chip8 {
     pub cpu: cpu::CPU,
@@ -12,10 +12,12 @@ pub struct Chip8 {
     pub keypad: keypad::Keypad,
 
     pub opcode: u16,
+    resume_from: u16,
 
-    rand: ThreadRng,
+    pub waiting_for_key: bool,
+    pub running: bool,
     pub paused: bool,
-    resume_from: u16
+    last_poll: std::time::Instant,
 }
 
 impl Chip8 {
@@ -45,10 +47,13 @@ impl Chip8 {
             keypad: keypad::Keypad::new(),
 
             opcode: 0,
+            resume_from: 0,
 
-            rand: rand::rng(),
-            paused: false,
-            resume_from: 0
+            waiting_for_key: false,
+            running: true,
+            paused: true,
+
+            last_poll: time::Instant::now()
         }
     }
 
@@ -63,12 +68,12 @@ impl Chip8 {
     }
     
     pub fn resume(&mut self) {
-        self.paused = false;
+        self.waiting_for_key = false;
         self.cpu.set_pc(self.resume_from);
     }
 
     pub fn run_with_callback_after<F>(&mut self, mut callback: F) where F: FnMut(&mut Chip8) {
-        while !self.paused {
+        while self.running && !self.waiting_for_key {
             self.fetch();
             self.decode_execute();
             callback(self);
@@ -76,7 +81,7 @@ impl Chip8 {
     }
     
     pub fn run_with_callback_before<F>(&mut self, mut callback: F) where F: FnMut(&mut Chip8) {
-        while !self.paused {
+        while self.running && !self.waiting_for_key {
             callback(self);
             self.fetch();
             self.decode_execute();
@@ -84,14 +89,14 @@ impl Chip8 {
     }
 
     pub fn fetch(&mut self) {
-        if self.paused { return }
+        if self.waiting_for_key { return }
 
         self.opcode = self.memory.read_u16(self.cpu.read_pc());
         println!("Ho fetchato 0x{:x} all'indirizzo 0x{:x}", self.opcode, self.cpu.program_counter);
     }
 
     pub fn decode_execute(&mut self) {
-        if self.paused { return }
+        if self.waiting_for_key { return }
 
         self.cpu.increment_pc();
         self.resume_from = self.cpu.read_pc();
@@ -438,7 +443,7 @@ impl Chip8 {
     }
 
     fn ld_vx_k(&mut self) {
-        self.paused = true;
+        self.waiting_for_key = true;
     }
 
     pub fn resume_ld_vx_k(&mut self, key: u8) {
@@ -498,7 +503,12 @@ impl Chip8 {
     }
 
     fn random(&mut self, min_incl: u8, max_incl: u8) -> u8 {
-        self.rand.random_range(min_incl..=max_incl)
+        let min = std::time::Duration::from_secs(min_incl as u64);
+        let max = std::time::Duration::from_secs(max_incl as u64);
+        let r= std::time::Instant::now().duration_since(self.last_poll).clamp(min, max);
+        self.last_poll = std::time::Instant::now();
+
+        (r.as_secs() & 0x0000_0000_0000_FFFF) as u8
     }
 
     pub fn timer(&mut self) {
@@ -506,6 +516,85 @@ impl Chip8 {
     }
 
     pub fn sound(&mut self) {
-        if self.cpu.sound > 0 { self.cpu.sound -= 1 }
+        if self.cpu.sound > 0 {
+            self.cpu.sound -= 1
+        }
+    }
+
+    pub fn get_mnemonic(opcode: u16) -> String {
+        match (opcode & 0xF000) >> 12 {
+
+            0x0 => {
+                match opcode & 0x0FFF {
+                    0x0E0 => "CLS".to_owned(),
+                    0x0EE => "RET".to_owned(),
+                    _ => format!("SYS {}", opcode & 0x0FFF),
+                }
+            }
+
+            0x1 => format!("JP {:#06x}", opcode & 0x0FFF),
+
+            0x2 => format!("CALL {:#06x}", opcode & 0x0FFF),
+
+            0x3 => format!("SE V{:1x}, {:#04x}", (opcode & 0x0F00) >> 8, opcode & 0x00FF),
+
+            0x4 => format!("SNE V{:1x}, {:#04x}", (opcode & 0x0F00) >> 8, opcode & 0x00FF),
+
+            0x5 => if opcode & 0x000F == 0 { format!("SE V{:1x}, V{:1x}", (opcode & 0x0F00) >> 8, (opcode & 0x00F0) >> 4) } else { panic!("Unrecognized {:2x}", opcode)},
+
+            0x6 => format!("LD V{:1x}, {:#04x}", (opcode & 0x0F00) >> 8, opcode & 0x00FF),
+
+            0x7 => format!("ADD V{:1x}, {:#04x}", (opcode & 0x0F00) >> 8, opcode & 0x00FF),
+
+            0x8 => {
+                match opcode & 0x000F {
+                    0x0 => format!("LD V{:1x}, V{:1x}", (opcode & 0x0F00) >> 8, (opcode & 0x00F0) >> 4),
+                    0x1 => format!("OR V{:1x}, V{:1x}", (opcode & 0x0F00) >> 8, (opcode & 0x00F0) >> 4),
+                    0x2 => format!("AND V{:1x}, V{:1x}", (opcode & 0x0F00) >> 8, (opcode & 0x00F0) >> 4),
+                    0x3 => format!("XOR V{:1x}, V{:1x}", (opcode & 0x0F00) >> 8, (opcode & 0x00F0) >> 4),
+                    0x4 => format!("ADD V{:1x}, V{:1x}", (opcode & 0x0F00) >> 8, (opcode & 0x00F0) >> 4),
+                    0x5 => format!("SUB V{:1x}, V{:1x}", (opcode & 0x0F00) >> 8, (opcode & 0x00F0) >> 4),
+                    0x6 => format!("SHR V{:1x}", (opcode & 0x0F00) >> 8),
+                    0x7 => format!("SUBN V{:1x}, V{:1x}", (opcode & 0x0F00) >> 8, (opcode & 0x00F0) >> 4),
+                    0xE => format!("SHL V{:1x}", (opcode & 0x0F00) >> 8),
+                    _ => panic!("Impossible opcode {:2x}", opcode)
+                }
+            }
+
+            0x9 => if opcode & 0x000F == 0 { format!("SNE V{:1x}, V{:1x}", (opcode & 0x0F00) >> 8, (opcode & 0x00F0) >> 4) } else { panic!("Unrecognized opcode {:2x}", opcode) },
+
+            0xA => format!("LD I, {:#06x}", opcode & 0x0FFF),
+
+            0xB => format!("JP V0, {:#06x}", opcode & 0x0FFF),
+
+            0xC => format!("RND V{:1x}, {:#04x}", (opcode & 0x0F00) >> 8, opcode & 0x00FF),
+
+            0xD => format!("DRW V{:1x}, V{:1x}, {:#03x}", (opcode & 0x0F00) >> 8, (opcode & 0x00F0) >> 4, opcode & 0x000F),
+
+            0xE => {
+                match opcode & 0x00FF {
+                    0x9E => format!("SKP V{:1x}", (opcode & 0x0F00) >> 8),
+                    0xA1 => format!("SKNP V{:1x}", (opcode & 0x0F00) >> 8),
+                    _ => panic!("Impossible opcode {:2x}",  opcode)
+                }
+            }
+
+            0xF => {
+                match opcode & 0x00FF {
+                    0x07 => format!("LD V{:1x}, DT", (opcode & 0x0F00) >> 8),
+                    0x0A => format!("LD V{:1x}, K", (opcode & 0x0F00) >> 8),
+                    0x15 => format!("LD DT, V{:1x}", (opcode & 0x0F00) >> 8),
+                    0x18 => format!("LD ST, V{:1x}", (opcode & 0x0F00) >> 8),
+                    0x1E => format!("ADD I, V{:1x}", (opcode & 0x0F00) >> 8),
+                    0x29 => format!("LD F, V{:1x}", (opcode & 0x0F00) >> 8),
+                    0x33 => format!("LD B, V{:1x}", (opcode & 0x0F00) >> 8),
+                    0x55 => format!("LD I, V{:1x}", (opcode & 0x0F00) >> 8),
+                    0x65 => format!("LD V{:1x}, I", (opcode & 0x0F00) >> 8),
+                    _ => panic!("Impossible opcode {:2x}", opcode)
+                }
+            }
+
+            _ => { panic!("Impossible opcode {:2x}", opcode) }
+        }
     }
 }

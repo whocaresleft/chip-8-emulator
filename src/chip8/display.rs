@@ -18,7 +18,7 @@ pub const DEFAULT_SPRITES: [[u8; 5]; 16] = [
 ];
 
 pub struct Display {
-    screen: [[u8; 64]; 32]
+    pub screen: [[u8; 64]; 32]
 }
 
 impl Display {

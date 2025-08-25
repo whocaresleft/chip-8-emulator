@@ -1,5 +1,5 @@
 pub struct Memory {
-    address_space:[u8; 0x1000]
+    pub address_space:[u8; 0x1000]
 }
 
 impl Memory {

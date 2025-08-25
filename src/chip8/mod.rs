@@ -15,9 +15,10 @@ pub struct Chip8 {
     resume_from: u16,
 
     pub waiting_for_key: bool,
-    pub running: bool,
-    pub paused: bool,
     last_poll: std::time::Instant,
+
+    rom: Vec<u8>,
+    pub new_draw: bool
 }
 
 impl Chip8 {
@@ -50,42 +51,55 @@ impl Chip8 {
             resume_from: 0,
 
             waiting_for_key: false,
-            running: true,
-            paused: true,
 
-            last_poll: time::Instant::now()
+            last_poll: time::Instant::now(),
+            rom: vec![],
+            new_draw: false
         }
     }
 
-    pub fn load(&mut self, program: Vec<u8>) {
-        for i in 0..program.len() {
-            self.memory.write_u8(0x0200 + i as u16, program[i]);
+    pub fn reset(&mut self) {
+        self.display.reset();
+        self.keypad = keypad::Keypad::new();
+        self.opcode = 0;
+        self.resume_from = 0;
+        self.waiting_for_key = false;
+        self.last_poll = time::Instant::now();
+
+        let mut mem = memory::Memory::new();
+        let ref sprites = display::DEFAULT_SPRITES;
+
+        let mut base_addr = 0x0000;
+        for i in 0..sprites.len() as u16 {
+
+            for j in 0..sprites[i as usize].len() as u16 {
+                mem.write_u8(base_addr + i + j, sprites[i as usize][j as usize]);
+            }
+            base_addr += 4;
         }
+        
+        let mut cpu= cpu::CPU::new();
+        cpu.set_sp(0x4e);
+        cpu.set_pc(0x0200);
+
+        self.cpu = cpu;
+        self.memory = mem;
+        self.load();
     }
 
-    pub fn run(&mut self) {
-        self.run_with_callback_after(|_| {});
+    pub fn insert_rom(&mut self, program: Vec<u8>) {
+        self.rom = program;
+    }
+
+    pub fn load(&mut self) {
+        for i in 0..self.rom.len() {
+            self.memory.write_u8(0x0200 + i as u16, self.rom[i]);
+        }
     }
     
     pub fn resume(&mut self) {
         self.waiting_for_key = false;
         self.cpu.set_pc(self.resume_from);
-    }
-
-    pub fn run_with_callback_after<F>(&mut self, mut callback: F) where F: FnMut(&mut Chip8) {
-        while self.running && !self.waiting_for_key {
-            self.fetch();
-            self.decode_execute();
-            callback(self);
-        }
-    }
-    
-    pub fn run_with_callback_before<F>(&mut self, mut callback: F) where F: FnMut(&mut Chip8) {
-        while self.running && !self.waiting_for_key {
-            callback(self);
-            self.fetch();
-            self.decode_execute();
-        }
     }
 
     pub fn fetch(&mut self) {
@@ -421,6 +435,7 @@ impl Chip8 {
             }
         }
         self.cpu.v_registers[0xF] = if changed { 1 } else { 0 };
+        self.new_draw = true;
     }
 
     fn skp_vx(&mut self) {
@@ -511,14 +526,12 @@ impl Chip8 {
         (r.as_secs() & 0x0000_0000_0000_FFFF) as u8
     }
 
-    pub fn timer(&mut self) {
+    pub fn update_dt(&mut self) {
         if self.cpu.delay > 0 { self.cpu.delay -= 1 }
     }
 
-    pub fn sound(&mut self) {
-        if self.cpu.sound > 0 {
-            self.cpu.sound -= 1
-        }
+    pub fn update_st(&mut self) {
+        if self.cpu.sound > 0 { self.cpu.sound -= 1 }
     }
 
     pub fn get_mnemonic(opcode: u16) -> String {
@@ -528,7 +541,7 @@ impl Chip8 {
                 match opcode & 0x0FFF {
                     0x0E0 => "CLS".to_owned(),
                     0x0EE => "RET".to_owned(),
-                    _ => format!("SYS {}", opcode & 0x0FFF),
+                    _ => format!("SYS {:#06x}", opcode & 0x0FFF),
                 }
             }
 

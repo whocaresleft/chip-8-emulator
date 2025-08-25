@@ -25,24 +25,6 @@ impl Display {
     pub fn new() -> Self {
         Display { screen: [[0; 64]; 32] }
     }
-
-    pub fn draw_pixel(&mut self, row: usize, column: usize) {
-        match (row, column) {
-            (0..=31, 0..=63) => {
-                self.screen[row][column] ^= 1;
-            }
-            _ => { panic!("Pixel out of bounds") }
-        }  
-    }
-    pub fn get_pixel(&self, row: usize, column: usize) -> u8 {
-        match (row, column) {
-            (0..=31, 0..=63) => {
-                self.screen[row][column]
-            }
-            _ => { panic!("Pixel out of bounds") }
-        }  
-    }
-
     pub fn reset(&mut self) {
         self.screen = [[0; 64]; 32];
     }

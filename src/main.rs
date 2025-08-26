@@ -26,6 +26,7 @@ fn main() -> eframe::Result<()> {
         let mut paused = true;
 
         let mut snapshot = false;
+        let mut keep_sending = false;
 
         while running {
             let (mut s, mut e): (u16, u16) = (0x0200, 0x020F);
@@ -86,6 +87,10 @@ fn main() -> eframe::Result<()> {
                     Command::ChangeFreq(freq) => {
                         threshold = 1.0/(freq as f64);
                     }
+
+                    Command::Continuous(keep) => {
+                        keep_sending = keep;
+                    }
                 }
             }
 
@@ -119,7 +124,7 @@ fn main() -> eframe::Result<()> {
                 chip.new_draw = false;
             }
 
-            if snapshot {
+            if snapshot || keep_sending {
                 _ = tx_status.send(
                     Status::from_emul(&chip, s, e)
                 );
@@ -133,7 +138,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        ".", 
+        "Chipx8 Emulator Debugger", 
         options, 
         Box::new(|_cc| Ok(
             Box::new(
@@ -159,7 +164,9 @@ enum Command {
 
     LoadRom(Vec<u8>),
 
-    ChangeFreq(u32)
+    ChangeFreq(u32),
+
+    Continuous(bool)
 }
 
 struct Status {

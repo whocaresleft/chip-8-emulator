@@ -22,10 +22,12 @@ pub struct DebugUI {
 
     pressed: std::collections::HashSet<egui::Key>,
 
-    color_on: [f32; 3],
-    color_off: [f32; 3],
+    color_on: ([f32; 3], egui::Color32),
+    color_off: ([f32; 3], egui::Color32),
     picked_file: Option<String>,
-    frequency: u32
+    frequency: u32,
+    rom_loaded: bool,
+    continuous: bool
 }
 
 impl DebugUI {
@@ -52,10 +54,11 @@ impl DebugUI {
             pressed: std::collections::HashSet::<egui::Key>::new(),
 
             picked_file: None,
-            color_on: [1.0; 3],
-            color_off: [0.0; 3],
-            frequency: 540
-
+            color_on: ([1.0; 3], egui::Color32::WHITE),
+            color_off: ([0.0; 3], egui::Color32::BLACK),
+            frequency: 540,
+            rom_loaded: false,
+            continuous: false
         }
     }
 
@@ -67,9 +70,9 @@ impl DebugUI {
         for y in 0..32 {
             for x in 0..64 {
                 let color = if self.framebuffer[y][x] == 1 {
-                    DebugUI::rgb_to_color(self.color_on) 
+                    self.color_on.1
                 } else {
-                    DebugUI::rgb_to_color(self.color_off) 
+                    self.color_off.1
                 };
                 image.pixels[y * 64 + x] = color;
             }
@@ -145,61 +148,89 @@ impl eframe::App for DebugUI {
 
         egui::SidePanel::left("debug").show(ctx, |ui| {
             ui.heading("Debug info");
-            ui.label(format!("Emulator is{}running", 
-                match self.running {
-                    true => " ",
-                    false => " not "
-                }
-            ));
-            ui.label(format!("Emulator is{}paused", 
-                match self.paused {
-                    true => " ",
-                    false => " not "
-                }
-            ));
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.debug, "Debug mode");
-                if self.debug {
-                    if ui.button("Snapshot").clicked() {
-                        _ = self.tx.send(Command::Snapshot(self.start_addr, self.end_addr));
+            
+            if self.rom_loaded {
+                ui.label(format!("Emulator is{}running", 
+                    match self.running {
+                        true => " ",
+                        false => " not "
                     }
-                }
-            });
-            ui.set_min_width(200.0);
-            ui.add_space(15.0);
-            if self.debug {
-                ui.label(format!("Opcode: {:#06x} - {}", self.status.opcode, self.status.mnemonic));
+                ));
+                ui.label(format!("Emulator is{}paused", 
+                    match self.paused {
+                        true => " ",
+                        false => " not "
+                    }
+                ));
+
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.debug, "Debug mode");
+                    if self.debug {
+                        ui.horizontal(|ui| {
+                            if ui.button("Snapshot").clicked() {
+                                _ = self.tx.send(Command::Snapshot(self.start_addr, self.end_addr));
+                            }
+                            if ui.checkbox(&mut self.continuous, "Continuous mode").changed() {
+                                if self.continuous {
+                                    println!("Continuous mode ON");
+                                    _ = self.tx.send(Command::Continuous(true));
+                                } else {
+                                    println!("Continuous mode OFF");
+                                    _ = self.tx.send(Command::Continuous(false));
+                                }
+                            }
+                        });
+                    }
+                });
+            
+                ui.set_min_width(200.0);
                 ui.add_space(15.0);
-            }
-            ui.horizontal(|ui| {
-                if !self.paused {
-                    if ui.button("Stop").clicked() {
-                        _ = self.tx.send(Command::Pause);
-                        self.paused = true;
-                    }
-                } else {
-                    if ui.button("Fetch").clicked() {
-                        if self.executed {
-                            self.handle_input(ctx);
-                            _ = self.tx.send(Command::Fetch);
-                            self.executed = false;
-                        }
-                    }
-                    if !self.executed {
-                        if ui.button("Execute").clicked() {
-                            _ = self.tx.send(Command::Execute);
-                            self.executed = true;
-                        }
-                    }
-                    if ui.button("Step").clicked() {
-                            self.handle_input(ctx);
-                        _ = self.tx.send(Command::Step);
-                    }
-                    if ui.button("Run").clicked() {
-                        _ = self.tx.send(Command::Resume);
-                        self.paused = false;
-                    }
+                if self.debug {
+                    ui.label(format!("Opcode: {:#06x} - {}", self.status.opcode, self.status.mnemonic));
+                    ui.add_space(15.0);
                 }
+                ui.horizontal(|ui| {
+                    if !self.paused {
+                        if ui.button("Stop").clicked() {
+                            _ = self.tx.send(Command::Pause);
+                            self.paused = true;
+                        }
+                    } else {
+                        if ui.button("Fetch").clicked() {
+                            if self.executed {
+                                self.handle_input(ctx);
+                                _ = self.tx.send(Command::Fetch);
+                                self.executed = false;
+                            }
+                        }
+                        if !self.executed {
+                            if ui.button("Execute").clicked() {
+                                _ = self.tx.send(Command::Execute);
+                                self.executed = true;
+                            }
+                        }
+                        if ui.button("Step").clicked() {
+                                self.handle_input(ctx);
+                            _ = self.tx.send(Command::Step);
+                        }
+                        if ui.button("Run").clicked() {
+                            _ = self.tx.send(Command::Resume);
+                            self.paused = false;
+                        }
+                    }
+                    
+                    if ui.button("Exit").clicked() {
+                        _ = self.tx.send(Command::Exit);
+                        self.running = false;
+                        std::thread::sleep(
+                            std::time::Duration::from_millis(
+                                400
+                            )
+                        );
+                        std::process::exit(0);
+                    }
+                });
+            } else { 
                 if ui.button("Exit").clicked() {
                     _ = self.tx.send(Command::Exit);
                     self.running = false;
@@ -210,7 +241,7 @@ impl eframe::App for DebugUI {
                     );
                     std::process::exit(0);
                 }
-            });
+            }
             ui.add_space(15.0);
 
             if self.debug {
@@ -313,12 +344,6 @@ impl eframe::App for DebugUI {
                         }   
                     );
                 }
-
-                ui.add_space(15.0);
-                let f = self.frequency;
-                if ui.add(egui::Slider::new(&mut self.frequency, 1..=600).text(format!("Frequency: {} Hz", f))).changed() {
-                    _ = self.tx.send(Command::ChangeFreq(self.frequency));
-                }
             }
             
             ui.add_space(15.0);
@@ -374,15 +399,20 @@ impl eframe::App for DebugUI {
                 ui.add(
                     egui::Image::new(tex).max_size(egui::Vec2::new(640.0, 320.0)).fit_to_exact_size(egui::Vec2::new(640.0, 320.0))
                 );
+                ui.add_space(15.0);
+                let f = self.frequency;
+                if ui.add(egui::Slider::new(&mut self.frequency, 1..=600).text(format!("Frequency: {} Hz", f))).changed() {
+                    _ = self.tx.send(Command::ChangeFreq(self.frequency));
+                }
             }
         });
         egui::TopBottomPanel::bottom("Tweaks").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("ON color: ");
-                ui.color_edit_button_rgb(&mut self.color_on);
+                if ui.color_edit_button_rgb(&mut self.color_on.0).changed() { self.color_on.1 = DebugUI::rgb_to_color(self.color_on.0); self.update_texture(ctx); }
                 ui.add_space(10.0);
                 ui.label("OFF color: ");
-                ui.color_edit_button_rgb(&mut self.color_off);
+                if ui.color_edit_button_rgb(&mut self.color_off.0).changed() { self.color_off.1 = DebugUI::rgb_to_color(self.color_off.0); self.update_texture(ctx); }
                 ui.add_space(10.0);
                 if ui.button("Insert ROM: ").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
@@ -398,6 +428,8 @@ impl eframe::App for DebugUI {
                         }
                         self.picked_file = None;
                         self.paused = true;
+                        self.rom_loaded = true;
+                        self.framebuffer = [[0u8; 64]; 32];
                         self.update_texture(ctx);
                     }
                 }

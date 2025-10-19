@@ -1,10 +1,11 @@
 use std::sync::mpsc::{Sender, Receiver};
-use super::{Command, Status};
+use super::chip8::{Chip8, keypad};
 
 pub struct DebugUI {
     tx: Sender<Command>,
     rx_framebuffer: Receiver<[[u8; 64]; 32]>,
     rx_status: Receiver<Status>,
+    rx_keyboard: Receiver<[u8; 16]>,
 
     framebuffer: [[u8; 64]; 32],
     texture: Option<egui::TextureHandle>,
@@ -27,11 +28,13 @@ pub struct DebugUI {
     picked_file: Option<String>,
     frequency: u32,
     rom_loaded: bool,
-    continuous: bool
+    continuous: bool,
+
+    keyboard: [u8; 16]
 }
 
 impl DebugUI {
-    pub fn new(tx: Sender<Command>, rx_framebuffer: Receiver<[[u8; 64]; 32]>, rx_status: Receiver<Status>) -> Self {
+    pub fn new(tx: Sender<Command>, rx_framebuffer: Receiver<[[u8; 64]; 32]>, rx_status: Receiver<Status>, rx_keyboard: Receiver<[u8; 16]>) -> Self {
         DebugUI {
             tx: tx,
             rx_framebuffer: rx_framebuffer,
@@ -58,7 +61,10 @@ impl DebugUI {
             color_off: ([0.0; 3], egui::Color32::BLACK),
             frequency: 540,
             rom_loaded: false,
-            continuous: false
+            continuous: false,
+
+            rx_keyboard: rx_keyboard,
+            keyboard: keypad::DEFAULT_LAYOUT
         }
     }
 
@@ -137,6 +143,11 @@ const KEYMAP: [(u8, egui::Key); 16] =
 impl eframe::App for DebugUI {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
 
+        match self.rx_keyboard.try_recv() {
+            Ok(keys) => self.keyboard = keys,
+            Err(_) => {} // no change
+        }
+        
         self.handle_input(ctx);
         match self.rx_framebuffer.try_recv() {
             Ok(fb) => {
@@ -350,7 +361,7 @@ impl eframe::App for DebugUI {
             ui.label("Keypad");
             ui.group(|ui| {
                 egui::Grid::new("keypad-status").striped(true).show(ui, |ui| {
-                    let keypad = &self.status.keypad;
+                    let keypad = &self.keyboard;
                     for i in 0..4 {
                         ui.colored_label(
                             if keypad[i * 4] & 0xF0 != 0 {
@@ -424,7 +435,7 @@ impl eframe::App for DebugUI {
                     
                     if ui.button("Load ROM").clicked() {
                         if let Ok(rom) = std::fs::read(picked_path) {
-                            _ = self.tx.send(super::Command::LoadRom(rom));
+                            _ = self.tx.send(Command::LoadRom(rom));
                         }
                         self.picked_file = None;
                         self.paused = true;
@@ -435,5 +446,64 @@ impl eframe::App for DebugUI {
                 }
             });
         });
+    }
+}
+
+pub enum Command {
+    Pause,
+    Resume,
+    Exit,
+
+    Snapshot(u16, u16),
+
+    Fetch,
+    Execute,
+    Step,
+
+    KeyDown(u8),
+    KeyUp(u8),
+
+    LoadRom(Vec<u8>),
+
+    ChangeFreq(u32),
+
+    Continuous(bool)
+}
+pub struct Status {
+    pc: u16,
+    sp: u8,
+    i: u16,
+
+    dt: u8,
+    st: u8,
+
+    v: [u8; 16],
+    stack: [u8; 32],
+
+    mem_view: Vec<u8>,
+
+    opcode: u16,
+    mnemonic: String
+}
+impl Status {
+    pub fn empty() -> Self {
+        Status{pc: 0, sp: 0, i: 0, dt: 0, st: 0, v: [0; 16], stack: [0; 32], mem_view: vec![], opcode: 0, mnemonic: String::new()}
+    }
+
+    pub fn from_emul(chip: &Chip8, start: u16, end: u16) -> Self {
+        let mut stack = [0u8; 32];
+        stack.copy_from_slice(&chip.memory.address_space[0x50..0x70]);
+        Status {
+            pc: chip.cpu.program_counter,
+            sp: chip.cpu.stack_pointer,
+            i: chip.cpu.i_register,
+            dt: chip.cpu.delay,
+            st: chip.cpu.sound,
+            v: chip.cpu.v_registers.clone(),
+            stack: stack,
+            mem_view: chip.memory.address_space[start as usize..=end as usize].to_vec(),
+            opcode: chip.opcode,
+            mnemonic: Chip8::get_mnemonic(chip.opcode)
+        }
     }
 }

@@ -3,7 +3,36 @@ name = "emulator"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-eframe = "0.32.1"
-egui = "0.32.1"
-rfd = "0.15.4"
+[build-dependencies]
+winres = "0.1.12"
+
+[dependencies.image]
+version = "0.25.8"
+optional = true
+
+[dependencies.egui]
+version = "0.32.1"
+optional = true
+
+[dependencies.eframe]
+version = "0.32.1"
+optional = true
+
+[dependencies.rfd]
+version = "0.15.4"
+optional = true
+
+[dependencies.sdl2]
+version = "0.38.0"
+features = ["image"]
+optional = true
+
+[features]
+default = ["debug-ver"]
+debug-ver = [
+    "egui",
+    "eframe",
+    "rfd",
+    "image"
+]
+release-ver = ["sdl2"]

@@ -18,7 +18,10 @@ pub struct Chip8 {
     last_poll: std::time::Instant,
 
     rom: Vec<u8>,
-    pub new_draw: bool
+    pub new_draw: bool,
+
+    cycles: usize,
+    pub exit: bool
 }
 
 impl Chip8 {
@@ -54,7 +57,9 @@ impl Chip8 {
 
             last_poll: time::Instant::now(),
             rom: vec![],
-            new_draw: false
+            new_draw: false,
+            cycles: 0,
+            exit: false
         }
     }
 
@@ -104,8 +109,9 @@ impl Chip8 {
 
     pub fn fetch(&mut self) {
         if self.waiting_for_key { return }
-
         self.opcode = self.memory.read_u16(self.cpu.read_pc());
+
+        #[cfg(feature = "debug-ver")]
         println!("Ho fetchato 0x{:x} all'indirizzo 0x{:x}", self.opcode, self.cpu.program_counter);
     }
 
@@ -191,6 +197,52 @@ impl Chip8 {
         }
     }
 
+    pub fn run(&mut self, framerate_hz: f64) {
+        self.run_with_callbacks(|_| {}, |_| {}, framerate_hz);
+    }
+
+    pub fn run_with_callback_first<F>(&mut self, callback: F, framerate_hz: f64) 
+        where F: FnMut(&mut Chip8)
+    {
+        self.run_with_callbacks(callback, |_| {}, framerate_hz);
+    }
+
+    pub fn run_with_callback_last<L>(&mut self, callback: L, framerate_hz: f64) 
+        where L: FnMut(&mut Chip8)
+    {
+        self.run_with_callbacks(|_| {}, callback, framerate_hz);
+    }
+
+    pub fn run_with_callbacks<F, L>(&mut self, mut first: F, mut last: L, framerate_hz: f64)
+        where F: FnMut(&mut Chip8), L: FnMut(&mut Chip8)
+    {
+        let mut start = time::Instant::now();
+        let mut end = time::Instant::now();
+        let mut accumulator = 0.0f64;
+        let threshold = 1.0/framerate_hz;
+        
+        while !self.exit {
+
+            let delta = end - start;
+            start = time::Instant::now();
+            accumulator += delta.as_secs_f64();
+
+            while accumulator >= threshold {
+                first(self);
+                self.fetch();
+                self.decode_execute();
+                self.cycles += 1;
+                if self.cycles == 9 {
+                    self.update_st();
+                    self.update_dt();
+                    self.cycles = 0;
+                }
+                accumulator -= threshold;
+                last(self);
+            }
+            end = time::Instant::now();
+        }
+    }
 
     pub fn stack_pop(&mut self) -> Option<u16> {
         match self.cpu.get_sp() {
@@ -198,6 +250,7 @@ impl Chip8 {
             0x50 | 0x52 | 0x54 | 0x56 | 0x58 | 0x5A | 0x5C | 0x5E | 
             0x60 | 0x62 | 0x64 | 0x66 | 0x68 | 0x6A | 0x6C | 0x6E => {
                 let result = self.memory.read_u16(self.cpu.get_sp() as u16);
+                #[cfg(feature = "debug-ver")]
                 println!("Ho letto {:x} dallo stacke", result);
                 self.cpu.set_sp(self.cpu.get_sp() - 2);
                 Some(result)
@@ -211,6 +264,7 @@ impl Chip8 {
             0x4e | 0x50 | 0x52 | 0x54 | 0x56 | 0x58 | 0x5A | 0x5C |  
             0x5E | 0x60 | 0x62 | 0x64 | 0x66 | 0x68 | 0x6A | 0x6C => {
                 self.cpu.set_sp(self.cpu.get_sp() + 2);
+                #[cfg(feature = "debug-ver")]
                 println!("Sto per scrivere {:x} nello stacke", value);
                 self.memory.write_u16(self.cpu.get_sp() as u16, value);
             },
@@ -228,6 +282,7 @@ impl Chip8 {
 
     fn ret(&mut self) {
         let new_pc = self.stack_pop().expect("Something went wrong");
+        #[cfg(feature = "debug-ver")]
         println!("STACK POP {:x}", new_pc);
         self.cpu.set_pc(new_pc);
     }
@@ -240,6 +295,7 @@ impl Chip8 {
     fn call_addr(&mut self) {
         let addr = self.opcode & 0x0FFF;
         let old_pc = self.cpu.read_pc();
+        #[cfg(feature = "debug-ver")]
         println!("STACK PUSH {:x}", old_pc);
         self.stack_push(old_pc);
 
@@ -459,9 +515,13 @@ impl Chip8 {
 
     fn ld_vx_k(&mut self) {
         self.waiting_for_key = true;
+        #[cfg(feature = "debug-ver")]
+        println!("Waiting from NOW")
     }
 
     pub fn resume_ld_vx_k(&mut self, key: u8) {
+        #[cfg(feature = "debug-ver")]
+        println!("RESUMING WITH KEY {:#06x}", key);
         let x = ((self.opcode & 0x0F00) >> 8) as usize;
         self.cpu.v_registers[x] = key;
         self.resume();
